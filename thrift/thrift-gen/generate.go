@@ -82,7 +82,7 @@ func runThrift(inFile string, outDir string) error {
 	args := []string{
 		"--gen", goArgs, "-out", outDir, inFile,
 	}
-	if *thriftNoRecurse == false {
+	if !*thriftNoRecurse {
 		args = append(args, "-r")
 	}
 	if err := execThrift(args...); err != nil {
