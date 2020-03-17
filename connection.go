@@ -206,9 +206,10 @@ type Connection struct {
 	healthCheckDone    chan struct{}
 	healthCheckHistory *healthHistory
 
-	// lastActivity is used to track how long the connection has been idle.
-	// (unix time, nano)
-	lastActivity atomic.Int64
+	// lastActivity{Recv,Send} is used to track how long the connection has been
+	// idle for the recieve and send connections respectively. (unix time, nano)
+	lastActivityRecv atomic.Int64
+	lastActivitySend atomic.Int64
 }
 
 type peerAddressComponents struct {
@@ -324,7 +325,8 @@ func (ch *Channel) newConnection(conn net.Conn, initialID uint32, outboundHP str
 		events:             events,
 		commonStatsTags:    ch.commonStatsTags,
 		healthCheckHistory: newHealthHistory(),
-		lastActivity:       *atomic.NewInt64(ch.timeNow().UnixNano()),
+		lastActivityRecv:   *atomic.NewInt64(ch.timeNow().UnixNano()),
+		lastActivitySend:   *atomic.NewInt64(ch.timeNow().UnixNano()),
 	}
 
 	if tosPriority := opts.TosPriority; tosPriority > 0 {
@@ -645,7 +647,7 @@ func (c *Connection) readFrames(_ uint32) {
 			return
 		}
 
-		c.updateLastActivity(frame)
+		c.updateLastActivityRecv(frame)
 
 		var releaseFrame bool
 		if c.relay == nil {
@@ -715,7 +717,7 @@ func (c *Connection) writeFrames(_ uint32) {
 				c.log.Debugf("Writing frame %s", f.Header)
 			}
 
-			c.updateLastActivity(f)
+			c.updateLastActivitySend(f)
 			err := f.WriteOut(c.conn)
 			c.opts.FramePool.Release(f)
 			if err != nil {
@@ -734,13 +736,23 @@ func (c *Connection) writeFrames(_ uint32) {
 	}
 }
 
-// updateLastActivity marks when the last message was received/sent on the channel.
+// updateLastActivityRecv marks when the last message was received on the channel.
 // This is used for monitoring idle connections and timing them out.
-func (c *Connection) updateLastActivity(frame *Frame) {
+func (c *Connection) updateLastActivityRecv(frame *Frame) {
 	// Pings are ignored for last activity.
 	switch frame.Header.messageType {
 	case messageTypeCallReq, messageTypeCallReqContinue, messageTypeCallRes, messageTypeCallResContinue, messageTypeError:
-		c.lastActivity.Store(c.timeNow().UnixNano())
+		c.lastActivityRecv.Store(c.timeNow().UnixNano())
+	}
+}
+
+// updateLastActivitySend marks when the last message was sent on the channel.
+// This is used for monitoring idle connections and timing them out.
+func (c *Connection) updateLastActivitySend(frame *Frame) {
+	// Pings are ignored for last activity.
+	switch frame.Header.messageType {
+	case messageTypeCallReq, messageTypeCallReqContinue, messageTypeCallRes, messageTypeCallResContinue, messageTypeError:
+		c.lastActivitySend.Store(c.timeNow().UnixNano())
 	}
 }
 
@@ -874,11 +886,18 @@ func (c *Connection) closeNetwork() {
 	}
 }
 
-// getLastActivityTime returns the timestamp of the last frame read or written,
+// getLastActivityRecvTime returns the timestamp of the last frame read or written,
 // excluding pings. If no frames were transmitted yet, it will return the time
 // this connection was created.
-func (c *Connection) getLastActivityTime() time.Time {
-	return time.Unix(0, c.lastActivity.Load())
+func (c *Connection) getLastActivityRecvTime() time.Time {
+	return time.Unix(0, c.lastActivityRecv.Load())
+}
+
+// getLastActivitySendTime returns the timestamp of the last frame read or written,
+// excluding pings. If no frames were transmitted yet, it will return the time
+// this connection was created.
+func (c *Connection) getLastActivitySendTime() time.Time {
+	return time.Unix(0, c.lastActivitySend.Load())
 }
 
 func (c *Connection) sendBufSize() (sendBufUsage int, sendBufSize int, _ error) {
